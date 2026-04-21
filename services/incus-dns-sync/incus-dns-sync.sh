@@ -48,7 +48,7 @@ _log_rotate() {
 log() {
     local level="$1"; shift
     local level_num="${LOG_LEVELS[$level]:-1}"
-    (( level_num < CURRENT_LOG_LEVEL )) && return 0
+    if (( level_num < CURRENT_LOG_LEVEL )); then return 0; fi
  
     local ts
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -63,7 +63,7 @@ log() {
     fi
  
     # FATAL ise stderr'e de yaz
-    (( level_num >= LOG_LEVELS[FATAL] )) && echo "$msg" >&2
+    if (( level_num >= LOG_LEVELS[FATAL] )); then echo "$msg" >&2; fi
 }
 
 
@@ -372,7 +372,9 @@ try:
     d = json.loads(sys.argv[1])
     meta = d.get('metadata', {})
     action = meta.get('action', '')
-    source = meta.get('source', '').split('/')[-1]
+    source = meta.get('name', '')
+    if not source:
+        source = meta.get('source', '').split('?')[0].split('/')[-1]
     if action and source:
         print(action + ' ' + source)
 except: pass
@@ -414,7 +416,7 @@ main() {
     log "INFO" "Lifecycle event dinleyici başlatılıyor..."
  
     # incus monitor JSON satır satır yayar
-    incus monitor --type=lifecycle 2>/dev/null | while IFS= read -r line; do
+    incus monitor --type=lifecycle --format=json 2>/dev/null | while IFS= read -r line; do
         [[ -z "$line" ]] && continue
  
         local parsed

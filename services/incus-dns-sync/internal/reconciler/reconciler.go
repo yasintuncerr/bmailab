@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -76,35 +77,35 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			r.logger.Info("reconciler durduruluyor")
+			r.logger.Info("reconciler stopping")
 			return nil
 
 		case err := <-eventErrCh:
 			if ctx.Err() != nil {
 				return nil // normal shutdown
 			}
-			// Event stream kesildi; reconcile loop çalışmaya devam eder,
-			// event watcher yeniden başlatılır.
-			r.logger.Error("event stream kesildi, yeniden başlatılıyor", "err", err)
+			// Event stream disconnected; reconcile loop continues,
+			// event watcher gets restarted.
+			r.logger.Error("event stream disconnected, restarting", "err", err)
 			go func() {
 				time.Sleep(5 * time.Second)
 				eventErrCh <- r.watchEvents(ctx)
 			}()
 
 		case <-ticker.C:
-			r.logger.Debug("periyodik reconcile tetiklendi")
+			r.logger.Debug("periodic reconcile triggered")
 			r.triggerReconcile()
 
 		case <-r.reconcileCh:
 			if err := r.reconcile(ctx); err != nil {
-				r.logger.Error("reconcile başarısız", "err", err)
+				r.logger.Error("reconcile failed", "err", err)
 			}
 		}
 	}
 }
 
-// triggerReconcile, reconcileCh'ya non-blocking olarak sinyal gönderir.
-// Kanalda zaten sinyal varsa yeni sinyal eklenmez (coalescence).
+// triggerReconcile sends a non-blocking signal to reconcileCh.
+// If there is already a signal in the channel, a new one is not added (coalescence).
 func (r *Reconciler) triggerReconcile() {
 	select {
 	case r.reconcileCh <- struct{}{}:
@@ -112,15 +113,15 @@ func (r *Reconciler) triggerReconcile() {
 	}
 }
 
-// watchEvents, Incus lifecycle event'lerini dinler ve reconcile tetikler.
+// watchEvents listens to Incus lifecycle events and triggers reconcile.
 func (r *Reconciler) watchEvents(ctx context.Context) error {
 	listener, err := r.incus.GetEventsAllProjects()
 	if err != nil {
-		return fmt.Errorf("event listener oluşturulamadı: %w", err)
+		return fmt.Errorf("failed to create event listener: %w", err)
 	}
 	defer listener.Disconnect()
 
-	r.logger.Info("lifecycle event dinleyici başlatıldı")
+	r.logger.Info("lifecycle event listener started")
 
 	handler := func(event api.Event) {
 		if event.Type != "lifecycle" {
@@ -129,47 +130,48 @@ func (r *Reconciler) watchEvents(ctx context.Context) error {
 
 		var meta api.EventLifecycle
 		if err := json.Unmarshal(event.Metadata, &meta); err != nil {
-			r.logger.Warn("event parse hatası", "err", err)
+			r.logger.Warn("event parse error", "err", err)
 			return
 		}
 
-		// Sadece instance event'leri
+		// Only instance events
 		if !strings.HasPrefix(meta.Action, "instance-") {
 			return
 		}
 
-		// Instance adını source'dan çıkar: /1.0/instances/ali-ws01 → ali-ws01
-		instanceName := sourceToName(meta.Source)
+		// Extract instance name and project from source: /1.0/instances/ali-ws01?project=system
+		projectName, instanceName := sourceToProjectAndName(meta.Source)
 		if instanceName == "" {
 			return
 		}
 
-		r.logger.Debug("lifecycle event",
+		r.logger.Info("lifecycle event received",
 			"action", meta.Action,
 			"instance", instanceName,
+			"project", projectName,
 		)
 
 		switch meta.Action {
 		case "instance-started":
-			// Başladıktan hemen sonra IP henüz atanmamış olabilir,
-			// kısa bir bekleme sonrası reconcile yeterli.
+			// Right after starting, IP might not be assigned yet,
+			// a short wait before reconcile is sufficient.
 			go func() {
 				time.Sleep(r.cfg.Incus.IPPollInterval)
 				r.triggerReconcile()
 			}()
 
 		case "instance-deleted":
-			// Silme anında instance artık listede yok; reconcile diff alır ve kaydı siler.
+			// On deletion, instance is no longer in the list; reconcile takes diff and deletes record.
 			r.triggerReconcile()
 		}
 	}
 
 	_, err = listener.AddHandler([]string{"lifecycle"}, handler)
 	if err != nil {
-		return fmt.Errorf("handler eklenemedi: %w", err)
+		return fmt.Errorf("failed to add handler: %w", err)
 	}
 
-	// ctx iptal edildiğinde listener'ı kapat
+	// close listener when ctx is cancelled
 	go func() {
 		<-ctx.Done()
 		listener.Disconnect()
@@ -178,29 +180,29 @@ func (r *Reconciler) watchEvents(ctx context.Context) error {
 	return listener.Wait()
 }
 
-// reconcile, tek bir tam senkronizasyon döngüsü çalıştırır.
+// reconcile runs a single full synchronization loop.
 //
-//	desired = dns-enabled profiline sahip, Running instance'lar → map[name]ip
-//	actual  = Technitium zone'undaki A kayıtları → map[name]ip
+//	desired = Running instances with dns-enabled profile → map[name]ip
+//	actual  = A records in Technitium zone → map[name]ip
 //
 // diff:
-//   - desired'da var, actual'da yok        → UpsertA
-//   - desired'da var, actual'da var ama IP farklı → UpsertA
-//   - desired'da yok, actual'da var, managed → DeleteA
+//   - in desired, not in actual        → UpsertA
+//   - in desired, in actual but different IP → UpsertA
+//   - not in desired, in actual, managed → DeleteA
 func (r *Reconciler) reconcile(ctx context.Context) error {
-	r.logger.Debug("reconcile başladı")
+	r.logger.Debug("reconcile started")
 
 	desired, err := r.desiredState(ctx)
 	if err != nil {
-		return fmt.Errorf("desired state alınamadı: %w", err)
+		return fmt.Errorf("failed to get desired state: %w", err)
 	}
 
 	actual, err := r.dns.ZoneRecords(ctx)
 	if err != nil {
-		return fmt.Errorf("actual state alınamadı: %w", err)
+		return fmt.Errorf("failed to get actual state: %w", err)
 	}
 
-	// managedNames'i güncelle: desired + önceden yönetilenler
+	// update managedNames: desired + previously managed
 	r.mu.Lock()
 	for name := range desired {
 		r.managedNames[name] = struct{}{}
@@ -214,48 +216,50 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 	r.mu.RUnlock()
 
+	r.logger.Info("reconcile dataset", "desired", len(desired), "actual", len(actual), "managed", len(managed))
+
 	adds, updates, deletes := 0, 0, 0
 
-	// Ekle / güncelle
+	// Add / update
 	for name, desiredIP := range desired {
 		fqdn := dns.FQDN(name, r.cfg.DNS.Zone)
 		actualIP, exists := actual[name]
 
 		if !exists {
-			r.logger.Info("DNS ekleniyor", "fqdn", fqdn, "ip", desiredIP)
+			r.logger.Info("DNS adding", "fqdn", fqdn, "ip", desiredIP)
 			if err := r.dns.UpsertA(ctx, fqdn, desiredIP); err != nil {
-				r.logger.Error("DNS eklenemedi", "fqdn", fqdn, "err", err)
+				r.logger.Error("failed to add DNS", "fqdn", fqdn, "err", err)
 				continue
 			}
 			adds++
 		} else if actualIP != desiredIP {
-			r.logger.Info("DNS güncelleniyor", "fqdn", fqdn, "old_ip", actualIP, "new_ip", desiredIP)
+			r.logger.Info("DNS updating", "fqdn", fqdn, "old_ip", actualIP, "new_ip", desiredIP)
 			if err := r.dns.UpsertA(ctx, fqdn, desiredIP); err != nil {
-				r.logger.Error("DNS güncellenemedi", "fqdn", fqdn, "err", err)
+				r.logger.Error("failed to update DNS", "fqdn", fqdn, "err", err)
 				continue
 			}
 			updates++
 		}
 	}
 
-	// Sil — sadece bu servis tarafından yönetilen ve artık desired'da olmayan kayıtlar
+	// Delete — only records managed by this service that are no longer in desired
 	for name, actualIP := range actual {
 		if _, inDesired := desired[name]; inDesired {
 			continue
 		}
 		if _, isManaged := managed[name]; !isManaged {
-			// Bu servis bu kaydı oluşturmadı, dokunma
+			// This service didn't create this record, do not touch
 			continue
 		}
 
 		fqdn := dns.FQDN(name, r.cfg.DNS.Zone)
-		r.logger.Info("DNS siliniyor", "fqdn", fqdn, "ip", actualIP)
+		r.logger.Info("DNS deleting", "fqdn", fqdn, "ip", actualIP)
 		if err := r.dns.DeleteA(ctx, fqdn, actualIP); err != nil {
-			r.logger.Error("DNS silinemedi", "fqdn", fqdn, "err", err)
+			r.logger.Error("failed to delete DNS", "fqdn", fqdn, "err", err)
 			continue
 		}
 
-		// managedNames'den çıkar
+		// remove from managedNames
 		r.mu.Lock()
 		delete(r.managedNames, name)
 		r.mu.Unlock()
@@ -264,86 +268,99 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 
 	if adds+updates+deletes > 0 {
-		r.logger.Info("reconcile tamamlandı",
+		r.logger.Info("reconcile completed",
 			"added", adds,
 			"updated", updates,
 			"deleted", deletes,
 		)
 	} else {
-		r.logger.Debug("reconcile tamamlandı — değişiklik yok")
+		r.logger.Info("reconcile completed — no changes")
 	}
 
 	return nil
 }
 
-// desiredState, dns-enabled profiline sahip Running instance'ları ve IP'lerini döner.
+// desiredState returns Running instances and their IPs with dns-enabled profile across all projects.
 func (r *Reconciler) desiredState(ctx context.Context) (map[string]string, error) {
-	instances, err := r.incus.GetInstancesFull(api.InstanceTypeAny)
-	if err != nil {
-		return nil, fmt.Errorf("instance listesi alınamadı: %w", err)
-	}
-
 	desired := make(map[string]string)
 
-	for _, inst := range instances {
-		// Sadece dns-enabled profili olanlar
-		if !hasProfile(inst.Profiles, r.cfg.Incus.DNSProfile) {
-			continue
-		}
-		// Sadece Running olanlar
-		if inst.State == nil || inst.State.Status != "Running" {
-			continue
-		}
+	projects, err := r.incus.GetProjects()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project list: %w", err)
+	}
 
-		ip, err := r.extractIP(inst.State)
+	for _, p := range projects {
+		cProject := r.incus.UseProject(p.Name)
+		instances, err := cProject.GetInstancesFull(api.InstanceTypeAny)
 		if err != nil {
-			r.logger.Warn("IP alınamadı",
-				"instance", inst.Name,
-				"err", err,
-			)
-			// IP bekleme döngüsü: instance yeni başlamış olabilir
-			go r.waitAndTrigger(inst.Name)
+			r.logger.Warn("failed to get project instance list", "project", p.Name, "err", err)
 			continue
 		}
 
-		desired[inst.Name] = ip
+		for _, inst := range instances {
+			// Only those with dns-enabled profile
+			if !hasProfile(inst.Profiles, r.cfg.Incus.DNSProfile) {
+				continue
+			}
+			// Only Running ones
+			if inst.State == nil || inst.State.Status != "Running" {
+				continue
+			}
+
+			ip, err := r.extractIP(inst.State)
+			if err != nil {
+				r.logger.Info("IP not yet retrieved, waiting",
+					"instance", inst.Name,
+					"project", p.Name,
+					"err", err,
+				)
+				// IP wait loop: instance might have just started
+				go r.waitAndTrigger(p.Name, inst.Name)
+				continue
+			}
+
+			desired[inst.Name] = ip
+		}
 	}
 
 	return desired, nil
 }
 
-// waitAndTrigger, instance'ın IP almasını bekler ve reconcile tetikler.
-// Bu sayede event watcher ile reconcile loop arasındaki race condition kapatılır.
-func (r *Reconciler) waitAndTrigger(instanceName string) {
+// waitAndTrigger waits for the instance to get an IP and triggers reconcile.
+// This resolves the race condition between event watcher and reconcile loop.
+func (r *Reconciler) waitAndTrigger(projectName, instanceName string) {
 	deadline := time.Now().Add(r.cfg.Incus.IPWaitTimeout)
+	cProject := r.incus.UseProject(projectName)
+
 	for time.Now().Before(deadline) {
 		time.Sleep(r.cfg.Incus.IPPollInterval)
 
-		inst, _, err := r.incus.GetInstanceFull(instanceName)
+		inst, _, err := cProject.GetInstanceFull(instanceName)
 		if err != nil {
-			return // instance silinmiş olabilir
+			return // instance might be deleted
 		}
 		if inst.State == nil || inst.State.Status != "Running" {
 			return
 		}
 
 		if _, err := r.extractIP(inst.State); err == nil {
-			r.logger.Debug("IP alındı, reconcile tetikleniyor", "instance", instanceName)
+			r.logger.Info("IP retrieved, triggering reconcile", "instance", instanceName)
 			r.triggerReconcile()
 			return
 		}
 	}
-	r.logger.Error("IP bekleme timeout",
+	r.logger.Error("IP wait timeout",
+		"project", projectName,
 		"instance", instanceName,
 		"timeout", r.cfg.Incus.IPWaitTimeout,
 	)
 }
 
-// extractIP, instance state'inden yapılandırılan arayüzün IPv4 adresini çıkarır.
+// extractIP extracts the IPv4 address of the configured interface from the instance state.
 func (r *Reconciler) extractIP(state *api.InstanceState) (string, error) {
 	iface, ok := state.Network[r.cfg.Incus.Interface]
 	if !ok {
-		return "", fmt.Errorf("arayüz bulunamadı: %s", r.cfg.Incus.Interface)
+		return "", fmt.Errorf("interface not found: %s", r.cfg.Incus.Interface)
 	}
 
 	for _, addr := range iface.Addresses {
@@ -351,10 +368,10 @@ func (r *Reconciler) extractIP(state *api.InstanceState) (string, error) {
 			return addr.Address, nil
 		}
 	}
-	return "", fmt.Errorf("IPv4 adresi yok (%s)", r.cfg.Incus.Interface)
+	return "", fmt.Errorf("no IPv4 address (%s)", r.cfg.Incus.Interface)
 }
 
-// hasProfile, verilen profil listesinde hedef profilin olup olmadığını kontrol eder.
+// hasProfile checks if the target profile exists in the given profile list.
 func hasProfile(profiles []string, target string) bool {
 	for _, p := range profiles {
 		if p == target {
@@ -364,18 +381,23 @@ func hasProfile(profiles []string, target string) bool {
 	return false
 }
 
-// sourceToName, Incus event source string'inden instance adını çıkarır.
-// "/1.0/instances/ali-ws01"  →  "ali-ws01"
-// "/1.0/instances/ali-ws01?project=default"  →  "ali-ws01"
-func sourceToName(source string) string {
-	// Query string'i at
+// sourceToProjectAndName extracts project and instance name from Incus event source string.
+// "/1.0/instances/ali-ws01"  →  "default", "ali-ws01"
+// "/1.0/instances/ali-ws01?project=system"  →  "system", "ali-ws01"
+func sourceToProjectAndName(source string) (string, string) {
+	proj := "default"
 	if i := strings.Index(source, "?"); i != -1 {
+		q := source[i+1:]
 		source = source[:i]
+		if vals, err := url.ParseQuery(q); err == nil {
+			if p := vals.Get("project"); p != "" {
+				proj = p
+			}
+		}
 	}
 	parts := strings.Split(strings.TrimPrefix(source, "/"), "/")
-	// ["1.0", "instances", "ali-ws01"]
 	if len(parts) >= 3 && parts[1] == "instances" {
-		return parts[2]
+		return proj, parts[2]
 	}
-	return ""
+	return proj, ""
 }

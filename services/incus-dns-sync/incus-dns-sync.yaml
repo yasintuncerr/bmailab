@@ -1,0 +1,44 @@
+# =============================================================================
+# incus-dns-sync.yaml — Servis yapılandırma dosyası
+# Konum: /etc/incus-dns-sync/incus-dns-sync.yaml
+# =============================================================================
+
+technitium:
+  # Technitium DNS web API adresi — trailing slash olmadan
+  api_base: "http://<TECHNITIUM_API_HOST>:<TECHNITIUM_WEB_PORT>"
+  # API erişim token'ı (Technitium arayüzü → Administration → Sessions)
+  token: "<TECHNITIUM_API_TOKEN>"
+  # API çağrısı timeout'u
+  timeout: 15s
+
+incus:
+  # Incus Unix socket yolu — boş bırakılırsa varsayılan kullanılır
+  # /var/lib/incus/unix.socket
+  socket_path: ""
+
+  # Sadece bu profile sahip instance'lar yönetilir
+  # Profile oluşturmak için: incus profile create dns-enabled
+  dns_profile: "dns-enabled"
+
+  # Instance'ın IP adresinin okunacağı ağ arayüzü
+  interface: "eth0"
+
+  # instance-started sonrası IP atanana kadar maksimum bekleme
+  ip_wait_timeout: 60s
+  # IP kontrol aralığı
+  ip_poll_interval: 3s
+
+dns:
+  # Kayıtların açılacağı zone
+  zone: "<LAB_DOMAIN>"
+  # Oluşturulan A kayıtlarının TTL'i (saniye)
+  ttl: 300
+
+reconciler:
+  # Periyodik tam senkronizasyon aralığı
+  # Servis kapalıyken oluşan tutarsızlıklar bu sürede düzeltilir
+  interval: 5m
+
+log:
+  # debug | info | warn | error
+  level: "info"

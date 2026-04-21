@@ -1,5 +1,5 @@
 [Unit]
-Description=Incus DNS Sync — Lifecycle event dinleyici
+Description=Incus DNS Sync — Lifecycle event dinleyici ve reconciler
 Documentation=file:///opt/infra/services/incus-dns-sync/README.md
 After=network-online.target incus.service
 Wants=network-online.target
@@ -7,14 +7,9 @@ Requires=incus.service
 
 [Service]
 Type=simple
+ExecStart=/usr/local/bin/incus-dns-sync -config /etc/incus-dns-sync/incus-dns-sync.yaml
 
-# Config dosyasının konumunu override etmek için:
-# systemctl edit incus-dns-sync → Environment satırını değiştir
-Environment=INCUS_DNS_SYNC_CONFIG=/etc/incus-dns-sync/incus-dns-sync.conf
-
-ExecStart=/opt/infra/services/incus-dns-sync/incus-dns-sync.sh
-
-# incus monitor beklenmedik kapanırsa otomatik yeniden başlat
+# Beklenmedik kapanışlarda yeniden başlat
 Restart=on-failure
 RestartSec=10s
 
@@ -22,7 +17,7 @@ RestartSec=10s
 StartLimitIntervalSec=120s
 StartLimitBurst=5
 
-# Çıktı
+# Çıktı doğrudan journald'a
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=incus-dns-sync
@@ -31,7 +26,8 @@ SyslogIdentifier=incus-dns-sync
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/log/incus-dns-sync /run
+# Incus socket'e erişim gerekli
+ReadWritePaths=/var/lib/incus
 
 [Install]
 WantedBy=multi-user.target

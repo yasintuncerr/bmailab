@@ -2,6 +2,9 @@ BINARY     := incus-dns-sync
 BUILD_DIR  := build
 CMD_PATH   := ./cmd/incus-dns-sync
 
+# go binary — sudo altında PATH daraldığı için tam yolu tercih et
+GO ?= $(shell command -v go 2>/dev/null || echo /usr/local/go/bin/go)
+
 # Build hedef mimarisi (cross-compile için override edilebilir)
 GOOS   ?= linux
 GOARCH ?= amd64
@@ -14,7 +17,7 @@ build:
 	@echo "→ Derleniyor: $(BINARY) ($(GOOS)/$(GOARCH))"
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		go build -trimpath -ldflags="-s -w" \
+		$(GO) build -trimpath -ldflags="-s -w" \
 		-o $(BUILD_DIR)/$(BINARY) $(CMD_PATH)
 	@echo "  Binary: $(BUILD_DIR)/$(BINARY)"
 
@@ -44,3 +47,10 @@ install: build
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+
+
+
+
+TECHNITIUM_API="http://10.14.21.20:5380"
+TECHNITIUM_TOKEN="705acf2cb10637723b35bdf7ff8f266fa5d0d29173e63b902f9cb9842c5d0900"

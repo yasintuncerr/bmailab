@@ -46,7 +46,7 @@ Altyapı, katmanlı bir servis mimarisi ile çalışır:
 ### 🔹 Dinamik DNS Yapısı
 
 - Tüm iç DNS yönetimi **Technitium DNS** üzerinden yapılır
-- `*.bmailab.uludag.edu.tr` wildcard kaydı Traefik’e yönlendirilir
+- `*.bmlab.uludag.edu.tr` wildcard kaydı Traefik’e yönlendirilir
 - Instance oluşturulduğunda:
 
 1. Incus lifecycle event tetiklenir
@@ -57,13 +57,13 @@ Altyapı, katmanlı bir servis mimarisi ile çalışır:
 📌 Örnek:
 
 ```
-ali-ws01 → ali-ws01.bmailab.uludag.edu.tr → 10.14.21.x
+ali-ws01 → ali-ws01.bmlab.uludag.edu.tr → 10.14.21.x
 ```
 
 Bu sayede kullanıcılar instance’larına doğrudan domain üzerinden erişebilir:
 
 ```bash
-ssh user@ali-ws01.bmailab.uludag.edu.tr
+ssh user@ali-ws01.bmlab.uludag.edu.tr
 ```
 
 ---

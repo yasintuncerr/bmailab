@@ -8,14 +8,14 @@ BMU AI Lab; yapay zekâ alanında araştırma, geliştirme ve eğitim faaliyetle
 
 ## 🧩 Altyapı Mimarisi
 
-Laboratuvar altyapısı, **Incus tabanlı container orchestration** yaklaşımı ile yönetilmektedir.
+Laboratuvar altyapısı, [**Incus tabanlı container orchestration**](docs/02.Incus-installiation.md) yaklaşımı ile yönetilmektedir.
 
 - Tüm compute kaynakları **Incus cluster yapısı** altında toplanır
 - Kullanıcı ortamları izole **container instance**’lar olarak oluşturulur
 - Her instance, standart bir **default profile** ile otomatik yapılandırılır
 - Instance’lar oluşturulduğunda olay (event) bazlı otomasyonlar tetiklenir
 
-### 🔹 Ağ ve Trafik Akışı
+### 🔹 [Ağ ve Trafik Akışı](docs/01.Network&Routing.md)
 
 - Ana host (`core-infra`), dış ağdan aldığı trafiği iç ağa dağıtır
 - İki temel ağ segmenti bulunur:
@@ -30,7 +30,7 @@ Laboratuvar altyapısı, **Incus tabanlı container orchestration** yaklaşımı
 
 ---
 
-### 🔹 Servis Katmanları
+### 🔹 [Servis Katmanları](docs/03.Infra-Gateway.md)
 
 Altyapı, katmanlı bir servis mimarisi ile çalışır:
 
@@ -43,7 +43,7 @@ Altyapı, katmanlı bir servis mimarisi ile çalışır:
 
 ---
 
-### 🔹 Dinamik DNS Yapısı
+### 🔹 [Dinamik DNS Yapısı](docs/04.Incus-dns-sync.md)
 
 - Tüm iç DNS yönetimi **Technitium DNS** üzerinden yapılır
 - `*.bmlab.uludag.edu.tr` wildcard kaydı Traefik’e yönlendirilir
@@ -126,3 +126,5 @@ ssh user@ali-ws01.bmlab.uludag.edu.tr
 |---|---------|----------|
 | 01 | [Ağ & Yönlendirme](docs/01.Network&Routing.md) | İç ağ yapısı, NAT, VLAN ve yönlendirme kuralları |
 | 02 | [Incus Kurulumu](docs/02.Incus-installiation.md) | Incus cluster kurulumu, profil tanımları ve instance yönetimi |
+| 03 | [Altyapı Servisleri (Gateway)](docs/03.Infra-Gateway.md) | Docker tabanlı Technitium, Traefik ve Authelia kurulumu |
+| 04 | [Incus DNS Sync](docs/04.Incus-dns-sync.md) | Event-driven otomatik DNS kayıt yönetimi ve servis kurulumu |
